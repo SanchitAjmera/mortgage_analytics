@@ -1,38 +1,6 @@
 import pandas as pd
 from typing import Dict, Optional, List, Tuple
-
-SCENARIO_ASSUMPTIONS: Dict[str, Dict] = {
-    "BLT interest-only private": {
-        "deposit_pc": 0.25,
-        "interest_rate": 0.045,
-        "lenders_fee": 1000,
-        "company": False,
-    },
-    "BLT repayment private": {
-        "deposit_pc": 0.25,
-        "interest_rate": 0.045,
-        "lenders_fee": 1000,
-        "company": False,
-    },
-    "Residential Repayment": {
-        "deposit_pc": 0.1,
-        "interest_rate": 0.049,
-        "lenders_fee": 1000,
-        "company": False,
-    },
-    "BLT interest-only ltd": {
-        "deposit_pc": 0.25,
-        "interest_rate": 0.0544,
-        "lenders_fee": 2000,
-        "company": True,
-    },
-    "BLT repayment ltd": {
-        "deposit_pc": 0.25,
-        "interest_rate": 0.0544,
-        "lenders_fee": 2000,
-        "company": True,
-    },
-}
+from analytics_utils import Scenario
 
 
 def compute_mortgage_analytics(
@@ -40,76 +8,67 @@ def compute_mortgage_analytics(
     price: float,
     service_charge: float,
     term: int,
-    scenario_assumptions: Dict[str, Dict] = SCENARIO_ASSUMPTIONS,
-    scenarios: List[str] = list(SCENARIO_ASSUMPTIONS.keys()),
+    scenarios: List[Scenario] = [],
+    additional_expenses: float = 0,
 ) -> pd.DataFrame:
     """
     Computes the mortgage analytics for each scenario in the scenario_assumptions dictionary
     it includes analutics on tax, cashflow, rental yield, and monthly payments for each scenario
     """
     results = []
-    for scenario, assumptions in scenario_assumptions.items():
-        if scenario not in scenarios:
-            continue
-
-        deposit = price * assumptions["deposit_pc"]
+    for scenario in scenarios:
+        deposit = price * scenario.deposit_pc
         loan_to_value = price - deposit
-        yearly_interest_payment = loan_to_value * assumptions["interest_rate"]
+        yearly_interest_payment = loan_to_value * scenario.interest_rate
         monthly_interest_payment = yearly_interest_payment / 12
         payments = term * 12
-        monthly_service_charge = service_charge / 12
-        monthly_interest_rate = assumptions["interest_rate"] / 12
+        monthly_expenses = (service_charge + additional_expenses) / 12
+        monthly_interest_rate = scenario.interest_rate / 12
         total_monthly_mortgage_payment = (
             loan_to_value
             * monthly_interest_rate
             * ((1 + monthly_interest_rate) ** payments)
             / ((1 + monthly_interest_rate) ** payments - 1)
-        )
+        ) + monthly_expenses
         monthly_loan_payment = total_monthly_mortgage_payment - monthly_interest_payment
         rental_yield = rent / price * 100
 
-        if "interest-only" in scenario:
-            total_monthly_mortgage_payment = monthly_interest_payment
+        if scenario.interest_only:
+            total_monthly_mortgage_payment = monthly_interest_payment + monthly_expenses
             monthly_loan_payment = 0
 
-        if assumptions["company"]:
+        if scenario.limited_company:
             # calculating rental yield with corporation tax on profits
-            taxable_amount = (
-                rent - monthly_service_charge - total_monthly_mortgage_payment
-            )
+            taxable_amount = max(rent - total_monthly_mortgage_payment, 0)
             corporation_tax_rate = 0.19
             tax = taxable_amount * corporation_tax_rate
-            rental_profit = (
-                rent - monthly_service_charge - total_monthly_mortgage_payment - tax
-            )
+            rental_profit = rent - total_monthly_mortgage_payment - tax
             rental_yield = rental_profit / rent
         else:
             # calculating rental yield with income tax on revenue
-            taxable_amount = rent - monthly_service_charge
+            taxable_amount = max(rent - monthly_expenses, 0)
             income_tax_rate = 0.4
             tax_relief = 0.2 * monthly_interest_payment
             tax = taxable_amount * income_tax_rate - tax_relief
-            rental_profit = (
-                rent - monthly_service_charge - total_monthly_mortgage_payment - tax
-            )
+            rental_profit = rent - total_monthly_mortgage_payment - tax
 
-        if "Residential" in scenario:
+        if not scenario.buy_to_let:
             # residential properties dont have any rental income
             tax = 0
             rental_profit = -total_monthly_mortgage_payment
             rental_yield = 0
 
         result = {
-            "scenario": scenario,
+            "scenario": str(scenario),
             "price": price,
             "deposit": deposit,
             "loan_to_value": loan_to_value,
-            "interest_rate": assumptions["interest_rate"],
+            "interest_rate": scenario.interest_rate,
             "yearly_interest_payment": yearly_interest_payment,
             "monthly_interest_payment": monthly_interest_payment,
             "monthly_loan_payment": monthly_loan_payment,
             "monthly_mortgage_payment": total_monthly_mortgage_payment,
-            "rent": 0 if "Residential" in scenario else rent,
+            "rent": 0 if not scenario.buy_to_let else rent,
             "taxable_amount": taxable_amount,
             "tax": tax,
             "cashflow": rental_profit,
@@ -119,14 +78,14 @@ def compute_mortgage_analytics(
         results.append(result)
 
     df = pd.DataFrame(results)
-    df.set_index("scenario", inplace=True)
+    # df.set_index("scenario", inplace=True)
     return df
 
 
 def compute_mortgage_cashflow_surface(
     service_charge: float = 2000,
     term: int = 25,
-    scenarios: List[str] = list(SCENARIO_ASSUMPTIONS.keys()),
+    scenarios: List[Scenario] = [],
 ) -> pd.DataFrame:
     """
     Computes the cashflow surface for a range of prices and rents
@@ -161,9 +120,7 @@ def compute_mortgage_cashflow_surface(
             )
             cashflows = results["cashflow"]
             for scenario in scenarios:
-                scenario_cashflow_surfaces.append(
-                    (scenario, price, rent, cashflows[scenario])
-                )
+                scenario_cashflow_surfaces.append((scenario, price, rent, cashflows))
 
     scenario_cashflow_surfaces = pd.DataFrame(
         scenario_cashflow_surfaces, columns=["scenario", "price", "rent", "cashflow"]
